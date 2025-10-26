@@ -26,7 +26,7 @@ export NCCL_IB_HCA=mlx5
 export UCX_NET_DEVICES=mlx5_0:1,mlx5_1:1,mlx5_2:1,mlx5_3:1,mlx5_4:1,mlx5_5:1,mlx5_6:1,mlx5_7:1
 
 # Set how many GPUs we actually have on this node.
-export GPUS_PER_NODE=8
+export GPUS_PER_NODE=4
 
 NNODES=${SLURM_JOB_NUM_NODES}
 export NNODES
@@ -34,31 +34,28 @@ export NNODES
 export VLLM_ATTENTION_BACKEND=FLASH_ATTN
 export RAY_LOGGING_LEVEL=DEBUG
 export HYDRA_FULL_ERROR=1
-export WANDB_API_KEY=... # your wandb API key
+export WANDB_API_KEY="d95d910e798393b49f93cafe05d9522075f40240" # your wandb API key
 
 echo "Using $NNODES nodes for training..."
 
 # ------------------------------------- Setup xp params ---------------------------------------
-project_name='RL-GSPO'
+project_name='verl_grpo_example_gsm8k'
 
 adv_estimator=grpo
 loss_mode=gspo
 loss_agg_mode="seq-mean-token-mean"
-MODEL_PATH=Qwen/Qwen2.5-3B-Instruct
+MODEL_PATH=/hpc2hdd/home/zli404/.cache/modelscope/hub/models/Qwen/Qwen3-4B
 offload=false # it's a small model, offloading will just slow-down training
 rollout_engine=vllm
 rollout_mode=sync # can be async to speedup large scale xps
-gpu_memory_utilization=0.8
+gpu_memory_utilization=0.7
 reward_manager=dapo
 adv_estimator=grpo
-shuffle_dataset=true
-first_time_dataset_prep=true # prepare dataset
 
-test_freq=10
-save_freq=10
-total_epochs=10
-total_training_steps=500
-val_before_train=false
+test_freq=7
+save_freq=20
+total_epochs=15
+val_before_train=True
 
 use_kl_in_reward=false
 kl_coef=0.0
@@ -67,13 +64,13 @@ kl_loss_coef=0.0
 
 clip_ratio_low=0.0003 # as recommended by the paper, see Sec. 5.1
 clip_ratio_high=0.0004 # as recommended by the paper, see Sec. 5.1
-train_batch_size=512
-ppo_mini_batch_size=128 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
-ppo_micro_batch_size_per_gpu=8 # setup depending on your GPU memory
-n_resp_per_prompt=16
+train_batch_size=1024
+ppo_mini_batch_size=256 # maintain 4 mini-batches as recommended by the paper, see Sec. 5.1
+ppo_micro_batch_size_per_gpu=16 # setup depending on your GPU memory
+n_resp_per_prompt=5
 
-max_prompt_length=$((1024 * 2))
-max_response_length=$((1024 * 8))
+max_prompt_length=512
+max_response_length=1024
 # dapo reward manager params
 enable_overlong_buffer=false # true
 overlong_buffer_len=$((1024 * 4))
@@ -81,8 +78,7 @@ overlong_penalty_factor=1.0
 
 # Paths and namings
 SFT_MODEL=$(basename $MODEL_PATH)
-exp_name="${loss_mode}-epslow-${clip_ratio_low}-epshigh-${clip_ratio_high}-${SFT_MODEL}-RL"
-CKPTS_DIR=/rl/checkpoints/experimental/4b/${loss_mode}/${exp_name}
+exp_name="qwen3_4b_function_rm_gspo"
 
 # Sampling params at rollouts
 temperature=1.0
@@ -99,14 +95,9 @@ offload=true
 gen_tp=1
 entropy_checkpointing=true # This enables entropy recomputation specifically for the entropy calculation, lowering memory usage during training.
 
-# ------------------------------------- train/val data preparation ---------------------------------------
-if [ "$first_time_dataset_prep" = true ]; then
-    echo "Preprocessing GSM8K dataset..."
-    python examples/data_preprocess/gsm8k.py --local_save_dir /data/gsm8k/
-fi
 
-gsm8k_train_path=/data/gsm8k/train.parquet
-gsm8k_test_path=/data/gsm8k/test.parquet
+gsm8k_train_path=data/gsm8k/train.parquet
+gsm8k_test_path=data/gsm8k/test.parquet
 
 # set the paths
 train_files="['$gsm8k_train_path']"
@@ -117,7 +108,6 @@ python3 -m verl.trainer.main_ppo \
     actor_rollout_ref.actor.policy_loss.loss_mode=${loss_mode} \
     data.train_files="${train_files}" \
     data.val_files="${test_files}" \
-    data.shuffle=$shuffle_dataset \
     data.prompt_key=prompt \
     data.truncation='error' \
     data.filter_overlong_prompts=true \
@@ -184,8 +174,6 @@ python3 -m verl.trainer.main_ppo \
     trainer.test_freq=${test_freq} \
     trainer.save_freq=${save_freq} \
     trainer.total_epochs=${total_epochs} \
-    trainer.total_training_steps=${total_training_steps} \
-    trainer.default_local_dir="${CKPTS_DIR}" \
     trainer.resume_mode=auto \
     trainer.log_val_generations=2 \
     $@
